@@ -5,7 +5,7 @@ use tokio_rustls::rustls;
 use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use tokio_rustls::rustls::pki_types::ServerName;
 
-use crate::{CertificateValidation, CertificateValidationCallback};
+use crate::{CertificateValidation, CertificateValidationCallback, CertificateValidationCallbackScope};
 
 /// Builds the rustls client configuration used by an RDP transport.
 ///
@@ -20,7 +20,27 @@ pub fn rustls_client_config(
     endpoint: &str,
     callback: Option<CertificateValidationCallback>,
 ) -> io::Result<rustls::ClientConfig> {
-    let verifier = server_cert_verifier(certificate_validation, endpoint, callback)?;
+    rustls_client_config_with_callback_scope(
+        certificate_validation,
+        endpoint,
+        callback,
+        CertificateValidationCallbackScope::default(),
+    )
+}
+
+/// Builds the rustls client configuration used by an RDP transport, with `scope` selecting the
+/// certificates the callback decides on.
+///
+/// # Panics
+///
+/// Panics if no process-level crypto provider is installed and rustls cannot unambiguously select one from the enabled provider features.
+pub fn rustls_client_config_with_callback_scope(
+    certificate_validation: CertificateValidation,
+    endpoint: &str,
+    callback: Option<CertificateValidationCallback>,
+    scope: CertificateValidationCallbackScope,
+) -> io::Result<rustls::ClientConfig> {
+    let verifier = server_cert_verifier(certificate_validation, endpoint, callback, scope)?;
     let mut config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(verifier)
@@ -34,11 +54,18 @@ fn server_cert_verifier(
     certificate_validation: CertificateValidation,
     endpoint: &str,
     callback: Option<CertificateValidationCallback>,
+    scope: CertificateValidationCallbackScope,
 ) -> io::Result<Arc<dyn ServerCertVerifier>> {
     if callback.is_some() && certificate_validation != CertificateValidation::Strict {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "a certificate-validation callback requires strict validation",
+        ));
+    }
+    if callback.is_none() && scope != CertificateValidationCallbackScope::InvalidCertificates {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a certificate-validation callback scope requires a callback",
         ));
     }
 
@@ -56,6 +83,7 @@ fn server_cert_verifier(
             verifier,
             endpoint: endpoint.to_owned(),
             callback,
+            scope,
         }),
         None => verifier,
     })
@@ -78,6 +106,7 @@ struct CallbackVerifier {
     verifier: Arc<dyn ServerCertVerifier>,
     endpoint: String,
     callback: CertificateValidationCallback,
+    scope: CertificateValidationCallbackScope,
 }
 
 impl core::fmt::Debug for CallbackVerifier {
@@ -99,7 +128,18 @@ impl ServerCertVerifier for CallbackVerifier {
             .verifier
             .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
         {
-            Ok(verified) => Ok(verified),
+            Ok(verified) => match self.scope {
+                CertificateValidationCallbackScope::InvalidCertificates => Ok(verified),
+                CertificateValidationCallbackScope::AllCertificates => {
+                    if (self.callback)(end_entity.as_ref(), &self.endpoint, "") {
+                        Ok(verified)
+                    } else {
+                        Err(rustls::Error::InvalidCertificate(
+                            rustls::CertificateError::ApplicationVerificationFailure,
+                        ))
+                    }
+                }
+            },
             Err(error) if (self.callback)(end_entity.as_ref(), &self.endpoint, &error.to_string()) => {
                 Ok(ServerCertVerified::assertion())
             }

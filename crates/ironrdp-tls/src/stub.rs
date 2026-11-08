@@ -79,6 +79,21 @@ where
     upgrade_with_certificate_validation_callback(stream, server_name, callback).await
 }
 
+/// The stub backend cannot perform a certificate-validation callback.
+pub async fn upgrade_with_scoped_certificate_validation_callback<S>(
+    stream: S,
+    server_name: &str,
+    endpoint: &str,
+    callback: CertificateValidationCallback,
+    scope: crate::CertificateValidationCallbackScope,
+) -> io::Result<(TlsStream<S>, Vec<u8>)>
+where
+    S: Unpin + AsyncRead + AsyncWrite,
+{
+    let _ = (endpoint, scope);
+    upgrade_with_certificate_validation_callback(stream, server_name, callback).await
+}
+
 /// The stub backend performs no handshake and reports nothing.
 pub fn negotiated<S>(_stream: &TlsStream<S>) -> crate::NegotiatedTls {
     crate::NegotiatedTls::default()

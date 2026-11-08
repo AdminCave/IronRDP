@@ -902,6 +902,61 @@ fn certificate_validation_preserves_the_default_and_callbacks_are_explicit() {
 }
 
 #[test]
+fn certificate_callback_scope_requires_a_callback_and_a_direct_connection() {
+    let builder = || {
+        ConfigBuilder::new()
+            .with_destination(Destination::from_parts("rdp.example.com", 3389))
+            .with_username("test-user")
+            .with_password("test-pass")
+            .with_client_build(1)
+            .with_client_dir("C:\\Windows\\System32")
+            .with_client_name("ironrdp-tests")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_certificate_validation_callback_scope(
+                ironrdp_tls::CertificateValidationCallbackScope::AllCertificates,
+            )
+    };
+    let callback: ironrdp_tls::CertificateValidationCallback = Arc::new(|_, _, _| true);
+
+    let config = builder()
+        .with_certificate_validation_callback(Arc::clone(&callback))
+        .build()
+        .expect("a direct connection with a callback supports the scope");
+    assert_eq!(
+        config.certificate_validation_callback_scope(),
+        ironrdp_tls::CertificateValidationCallbackScope::AllCertificates
+    );
+
+    // oracle: mutant scope accepted where the callback is never consulted for a valid certificate
+    for (case, builder) in [
+        ("without a callback", builder()),
+        (
+            "over a gateway",
+            builder()
+                .with_certificate_validation_callback(Arc::clone(&callback))
+                .with_transport(ironrdp_client::config::TransportKind::Gateway {
+                    endpoint: "gateway.example.com:443".to_owned(),
+                    prefer_direct: false,
+                })
+                .with_gateway_username("gateway-user")
+                .with_gateway_password("gateway-pass"),
+        ),
+        (
+            "with the UDP transport",
+            builder()
+                .with_certificate_validation_callback(Arc::clone(&callback))
+                .with_udp_transport(true),
+        ),
+    ] {
+        let error = builder.build().expect_err(case);
+        assert!(
+            error.to_string().contains("certificate-validation callback scope"),
+            "{case}: {error}"
+        );
+    }
+}
+
+#[test]
 fn desktop_dimensions_are_parsed_from_rdp_file() {
     let config = parse_config_from_rdp(
         "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\ndesktopwidth:i:1024\ndesktopheight:i:768\ndesktopscalefactor:i:125\n",

@@ -41,10 +41,10 @@ compile_error!(
 #[cfg(any(feature = "stub", feature = "native-tls", feature = "rustls-no-provider"))]
 pub use impl_::{
     TlsStream, negotiated, upgrade, upgrade_with_certificate_validation, upgrade_with_certificate_validation_callback,
-    upgrade_with_certificate_validation_callback_for_endpoint,
+    upgrade_with_certificate_validation_callback_for_endpoint, upgrade_with_scoped_certificate_validation_callback,
 };
 #[cfg(feature = "rustls-verifier")]
-pub use rustls_verifier::rustls_client_config;
+pub use rustls_verifier::{rustls_client_config, rustls_client_config_with_callback_scope};
 
 /// Called when the Rustls backend cannot validate a server certificate.
 ///
@@ -56,7 +56,25 @@ pub use rustls_verifier::rustls_client_config;
 ///
 /// The `native-tls` and stub backends cannot safely support this operation and return
 /// an error if it is requested.
+///
+/// With [`CertificateValidationCallbackScope::AllCertificates`] the callback also decides on
+/// certificates that pass validation; the validation-error description is empty for those.
 pub type CertificateValidationCallback = Arc<dyn Fn(&[u8], &str, &str) -> bool + Send + Sync>;
+
+/// The server certificates a [`CertificateValidationCallback`] decides on.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CertificateValidationCallbackScope {
+    /// Only certificates that fail strict validation; a valid certificate is accepted without the callback.
+    #[default]
+    InvalidCertificates,
+    /// Every server certificate, after strict validation: a valid certificate is accepted only if the
+    /// callback approves it too.
+    ///
+    /// Use this to pin certificates, so that a certificate a platform root vouches for cannot replace a
+    /// pinned one.
+    AllCertificates,
+}
 
 /// Certificate-validation policy applied during a TLS handshake.
 ///

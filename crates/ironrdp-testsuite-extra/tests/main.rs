@@ -19,5 +19,6 @@ mod gateway_detect;
 mod rdpei_native;
 mod rdpeudp_tokio;
 mod static_channel;
+mod tls_callback_scope;
 mod vmconnect;
 mod volume;

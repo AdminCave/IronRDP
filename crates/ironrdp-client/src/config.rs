@@ -104,6 +104,7 @@ pub struct Config {
     pub(crate) udp_offer_version: UdpVersion,
     pub(crate) certificate_validation: ironrdp_tls::CertificateValidation,
     pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
+    pub(crate) certificate_validation_callback_scope: ironrdp_tls::CertificateValidationCallbackScope,
     #[cfg(feature = "entra-auth")]
     pub(crate) entra_auth: Option<Arc<crate::entra::EntraAuthSession>>,
     #[cfg(all(feature = "gateway", feature = "entra-auth"))]
@@ -202,6 +203,11 @@ impl Config {
     /// Optional exception handler for an otherwise-invalid server certificate.
     pub fn certificate_validation_callback(&self) -> Option<&ironrdp_tls::CertificateValidationCallback> {
         self.certificate_validation_callback.as_ref()
+    }
+
+    /// The server certificates the certificate-validation callback decides on.
+    pub fn certificate_validation_callback_scope(&self) -> ironrdp_tls::CertificateValidationCallbackScope {
+        self.certificate_validation_callback_scope
     }
 
     #[cfg(feature = "vmconnect")]
@@ -331,6 +337,10 @@ impl fmt::Debug for Config {
         s.field(
             "certificate_validation_callback",
             &self.certificate_validation_callback.as_ref().map(|_| "<configured>"),
+        );
+        s.field(
+            "certificate_validation_callback_scope",
+            &self.certificate_validation_callback_scope,
         );
         #[cfg(feature = "vmconnect")]
         {
@@ -981,6 +991,7 @@ pub struct ConfigBuilder {
     enable_credssp: Option<bool>,
     certificate_validation: Option<ironrdp_tls::CertificateValidation>,
     certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
+    certificate_validation_callback_scope: ironrdp_tls::CertificateValidationCallbackScope,
     keyboard_type: Option<ironrdp_pdu::gcc::KeyboardType>,
     keyboard_subtype: Option<u32>,
     keyboard_functional_keys_count: Option<u32>,
@@ -1497,6 +1508,21 @@ impl ConfigBuilder {
         callback: ironrdp_tls::CertificateValidationCallback,
     ) -> Self {
         self.certificate_validation_callback = Some(callback);
+        self
+    }
+
+    /// Select the server certificates the certificate-validation callback decides on.
+    ///
+    /// [`ironrdp_tls::CertificateValidationCallbackScope::AllCertificates`] requires a callback, and
+    /// applies to direct connections without the UDP transport only; building the configuration fails
+    /// otherwise. A redirection target whose certificate the redirecting server reports is accepted
+    /// without the callback, as with the default scope.
+    #[must_use]
+    pub fn with_certificate_validation_callback_scope(
+        mut self,
+        scope: ironrdp_tls::CertificateValidationCallbackScope,
+    ) -> Self {
+        self.certificate_validation_callback_scope = scope;
         self
     }
 
@@ -2511,6 +2537,21 @@ impl ConfigBuilder {
         {
             anyhow::bail!("cannot combine a dangerous certificate policy with a validation callback");
         }
+        if self.certificate_validation_callback_scope != ironrdp_tls::CertificateValidationCallbackScope::default() {
+            anyhow::ensure!(
+                self.certificate_validation_callback.is_some(),
+                "a certificate-validation callback scope requires a validation callback"
+            );
+            anyhow::ensure!(
+                matches!(self.transport, TransportKind::Direct),
+                "a certificate-validation callback scope requires a direct connection"
+            );
+            #[cfg(feature = "udp")]
+            anyhow::ensure!(
+                !self.udp_transport_enabled,
+                "a certificate-validation callback scope is not supported with the UDP transport"
+            );
+        }
 
         let codecs: Vec<&str> = self.codecs.iter().map(String::as_str).collect();
         let codecs = client_codecs_capabilities(&codecs).map_err(|help| anyhow::anyhow!("{help}"))?;
@@ -2797,6 +2838,7 @@ impl ConfigBuilder {
             udp_offer_version: self.udp_offer_version.unwrap_or(UdpVersion::V3),
             certificate_validation,
             certificate_validation_callback: self.certificate_validation_callback,
+            certificate_validation_callback_scope: self.certificate_validation_callback_scope,
             #[cfg(feature = "entra-auth")]
             entra_auth: self.entra_auth,
             #[cfg(all(feature = "gateway", feature = "entra-auth"))]

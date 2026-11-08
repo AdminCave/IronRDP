@@ -3725,11 +3725,12 @@ where
     let callback =
         redirection_certificate_callback(config).or_else(|| config.certificate_validation_callback().cloned());
     let tls_upgrade = if let Some(callback) = callback.clone() {
-        ironrdp_tls::upgrade_with_certificate_validation_callback_for_endpoint(
+        ironrdp_tls::upgrade_with_scoped_certificate_validation_callback(
             initial_stream,
             config.destination.name(),
             &config.destination.to_string(),
             callback,
+            config.certificate_validation_callback_scope(),
         )
         .await
     } else {

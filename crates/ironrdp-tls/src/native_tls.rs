@@ -86,6 +86,21 @@ where
     upgrade_with_certificate_validation_callback(stream, server_name, callback).await
 }
 
+/// The `native-tls` backend cannot safely expose a certificate-validation callback.
+pub async fn upgrade_with_scoped_certificate_validation_callback<S>(
+    stream: S,
+    server_name: &str,
+    endpoint: &str,
+    callback: CertificateValidationCallback,
+    scope: crate::CertificateValidationCallbackScope,
+) -> io::Result<(TlsStream<S>, x509_cert::Certificate)>
+where
+    S: Unpin + AsyncRead + AsyncWrite,
+{
+    let _ = (endpoint, scope);
+    upgrade_with_certificate_validation_callback(stream, server_name, callback).await
+}
+
 /// The `native-tls` backend does not expose the negotiated version or cipher.
 pub fn negotiated<S>(_stream: &TlsStream<S>) -> crate::NegotiatedTls {
     crate::NegotiatedTls::default()

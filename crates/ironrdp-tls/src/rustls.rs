@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
 use tokio_rustls::rustls::pki_types::ServerName;
 
-use crate::{CertificateValidation, CertificateValidationCallback};
+use crate::{CertificateValidation, CertificateValidationCallback, CertificateValidationCallbackScope};
 
 pub type TlsStream<S> = tokio_rustls::client::TlsStream<S>;
 
@@ -81,7 +81,34 @@ pub async fn upgrade_with_certificate_validation_callback_for_endpoint<S>(
 where
     S: Unpin + AsyncRead + AsyncWrite,
 {
-    let config = crate::rustls_client_config(CertificateValidation::Strict, endpoint, Some(callback))?;
+    upgrade_with_scoped_certificate_validation_callback(
+        stream,
+        server_name,
+        endpoint,
+        callback,
+        CertificateValidationCallbackScope::default(),
+    )
+    .await
+}
+
+/// Upgrades a stream with normal platform-root and server-name validation, invoking `callback`
+/// with `endpoint` for the certificates `scope` selects.
+pub async fn upgrade_with_scoped_certificate_validation_callback<S>(
+    stream: S,
+    server_name: &str,
+    endpoint: &str,
+    callback: CertificateValidationCallback,
+    scope: CertificateValidationCallbackScope,
+) -> io::Result<(TlsStream<S>, x509_cert::Certificate)>
+where
+    S: Unpin + AsyncRead + AsyncWrite,
+{
+    let config = crate::rustls_client_config_with_callback_scope(
+        CertificateValidation::Strict,
+        endpoint,
+        Some(callback),
+        scope,
+    )?;
     let domain = ServerName::try_from(server_name.to_owned()).map_err(io::Error::other)?;
     let mut tls_stream = tokio_rustls::TlsConnector::from(Arc::new(config))
         .connect(domain, stream)
