@@ -1136,6 +1136,20 @@ impl ResizeQueue {
         self.in_flight = None;
     }
 
+    /// Completes the in-flight resize once the image has its size. With the graphics pipeline a
+    /// server applies a resize by resetting the graphics output, without a
+    /// Deactivation-Reactivation Sequence, so the new image size is the only sign it is done.
+    fn completed_by_size(&mut self, width: u16, height: u16) -> bool {
+        let done = self
+            .in_flight
+            .as_ref()
+            .is_some_and(|in_flight| (in_flight.request.width, in_flight.request.height) == (width, height));
+        if done {
+            self.completed();
+        }
+        done
+    }
+
     fn timed_out_request(&self, now: tokio::time::Instant) -> Option<(ResizeRequest, DisplayResizeFallbackReason)> {
         if let Some(in_flight) = self.in_flight.as_ref()
             && now >= in_flight.deadline
@@ -5433,6 +5447,13 @@ async fn active_session(
                     }
                 }
                 ActiveStageOutput::GraphicsUpdate(region) => {
+                    if resize_queue.completed_by_size(image.width(), image.height()) {
+                        debug!(
+                            width = image.width(),
+                            height = image.height(),
+                            "Resize completed by a graphics output reset"
+                        );
+                    }
                     let width =
                         NonZeroU16::new(image.width()).ok_or_else(|| ironrdp_session::general_err!("width is zero"))?;
                     let height = NonZeroU16::new(image.height())
@@ -6673,6 +6694,20 @@ mod tests {
             queue.pending.as_ref().map(|pending| pending.request.clone()),
             Some(latest)
         );
+    }
+
+    #[test]
+    fn resize_queue_completes_when_the_image_has_the_requested_size() {
+        let mut queue = ResizeQueue::default();
+        queue.mark_in_flight(resize_request(1600, 900));
+        queue.defer(resize_request(1920, 1080));
+
+        assert!(!queue.completed_by_size(1280, 720));
+        assert!(queue.in_flight.is_some());
+        assert!(queue.completed_by_size(1600, 900));
+        assert!(queue.in_flight.is_none());
+        assert!(queue.pending.is_some());
+        assert!(!queue.completed_by_size(1600, 900));
     }
 
     #[test]
