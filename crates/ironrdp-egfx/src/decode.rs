@@ -431,6 +431,16 @@ mod openh264_impl {
         pub fn from_library_path(library_path: &std::path::Path) -> DecoderResult<Self> {
             let api = openh264::OpenH264API::from_blob_path(library_path)
                 .map_err(|e| DecoderError::new("failed to load OpenH264 library", e))?;
+            Self::from_api(api)
+        }
+
+        /// Create a decoder from an OpenH264 API the caller has already loaded
+        ///
+        /// For a caller that verifies the library itself, e.g. against a pinned
+        /// release that `openh264-sys2`'s list of known hashes does not carry yet,
+        /// and then loads it with `OpenH264API::from_blob_path_unchecked`.
+        #[cfg(feature = "openh264-libloading")]
+        pub fn from_api(api: openh264::OpenH264API) -> DecoderResult<Self> {
             let decoder = openh264::decoder::Decoder::with_api_config(api, Default::default())
                 .map_err(|e| DecoderError::new("failed to create OpenH264 decoder", e))?;
 

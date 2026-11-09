@@ -17,6 +17,7 @@ test = false
 __bench = ["dep:visibility"]
 __test = ["dep:visibility"]
 openh264-bundled = ["ironrdp-egfx/openh264-bundled", "dep:openh264"]
+openh264-libloading = ["ironrdp-egfx/openh264-libloading", "dep:openh264-libloading"]
 remote-guard = ["ironrdp-connector/remote-guard"]
 
 [[test]]
@@ -34,6 +35,7 @@ ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-svc.path = "../ironrdp-svc"
 paste = "1"
 openh264 = { version = "0.9", optional = true, default-features = false, features = ["source"] }
+openh264-libloading = { package = "openh264", version = "0.9", optional = true, default-features = false, features = ["libloading"] }
 visibility = { version = "0.1", optional = true }
 
 [dev-dependencies]

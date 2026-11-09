@@ -125,6 +125,34 @@ fn specification_sample_is_decoded_with_openh264_and_placed_at_its_geometry() {
     }));
 }
 
+#[cfg(feature = "openh264-libloading")]
+#[test]
+fn library_path_refuses_a_file_outside_the_known_releases() {
+    let path = std::env::temp_dir().join(format!("ironrdp-not-openh264-{}.so", std::process::id()));
+    std::fs::write(&path, b"not a Cisco release").unwrap();
+    let result = ironrdp_egfx::decode::OpenH264Decoder::from_library_path(&path);
+    std::fs::remove_file(&path).unwrap();
+    assert!(result.is_err());
+}
+
+/// Runs only with `OPENH264_LIBRARY` naming a Cisco binary the caller has verified itself.
+#[cfg(feature = "openh264-libloading")]
+#[test]
+#[ignore = "needs OPENH264_LIBRARY"]
+fn specification_sample_is_decoded_with_an_api_the_caller_loaded() {
+    let path = std::env::var_os("OPENH264_LIBRARY").expect("OPENH264_LIBRARY");
+    present_specification_sample(Box::new(move || {
+        // SAFETY: the caller of this test names a Cisco release for this platform.
+        let api = unsafe { openh264_libloading::OpenH264API::from_blob_path_unchecked(&path) }.ok()?;
+        let decoder: Box<dyn H264Decoder> = Box::new(
+            ironrdp_egfx::decode::OpenH264Decoder::from_api(api)
+                .ok()?
+                .with_yuv_matrix(ironrdp_egfx::decode::YuvMatrix::Bt601Limited),
+        );
+        Some(decoder)
+    }));
+}
+
 #[cfg(windows)]
 #[test]
 fn specification_sample_is_decoded_with_media_foundation_and_placed_at_its_geometry() {
@@ -181,7 +209,7 @@ fn media_foundation_and_openh264_agree_on_the_specification_sample() {
     }
 }
 
-#[cfg(any(windows, feature = "openh264-bundled"))]
+#[cfg(any(windows, feature = "openh264-bundled", feature = "openh264-libloading"))]
 fn present_specification_sample(decoder_factory: ironrdp_rdpevor::DecoderFactory) {
     let mut presenter = VideoPresenter::new(decoder_factory, Box::new(|| 1_000_000));
     assert!(presenter.start(&start_request()));
