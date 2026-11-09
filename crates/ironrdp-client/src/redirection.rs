@@ -13,6 +13,31 @@ use crate::config::{Config, Destination, Transport};
 /// Most redirections followed by one client run before giving up, which breaks redirection loops.
 pub(crate) const MAX_SERVER_REDIRECTIONS: u32 = 8;
 
+/// Reason of the error a client returns when it refuses a server redirection.
+pub const REFUSED_SERVER_REDIRECTION: &str = "the client does not follow server redirections";
+
+/// Whether `error`, or an error in its source chain, is the refusal of a server redirection.
+///
+/// A client configured with [`ConfigBuilder::with_refuse_server_redirection`] reports the refusal as
+/// [`RdpOutputEvent::ConnectionFailure`] during the connection sequence and as [`RdpOutputEvent::Terminated`] in an
+/// active session; this tells either apart from other failures.
+///
+/// [`ConfigBuilder::with_refuse_server_redirection`]: crate::config::ConfigBuilder::with_refuse_server_redirection
+/// [`RdpOutputEvent::ConnectionFailure`]: crate::rdp::RdpOutputEvent::ConnectionFailure
+/// [`RdpOutputEvent::Terminated`]: crate::rdp::RdpOutputEvent::Terminated
+pub fn is_refused_server_redirection(error: &(dyn core::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(connector) = error.downcast_ref::<ironrdp_connector::ConnectorError>()
+            && matches!(connector.kind(), ironrdp_connector::ConnectorErrorKind::Reason(reason) if reason == REFUSED_SERVER_REDIRECTION)
+        {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
 /// What a Server Redirection PDU changes for the next connection attempts.
 #[derive(Clone, Default)]
 pub(crate) struct RedirectionHop {
@@ -49,6 +74,10 @@ pub(crate) fn apply_server_redirection(
     config: &mut Config,
     redirection: &ServerRedirectionPdu,
 ) -> ConnectorResult<String> {
+    if config.refuse_server_redirection {
+        return Err(reason_err!("Redirect", "{REFUSED_SERVER_REDIRECTION}"));
+    }
+
     #[cfg(windows)]
     if matches!(config.transport, Transport::NamedPipe { .. }) {
         return Err(reason_err!(

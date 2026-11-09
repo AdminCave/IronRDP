@@ -91,6 +91,8 @@ fn http_client_builder() -> std::io::Result<reqwest::ClientBuilder> {
     Ok(builder)
 }
 
+pub use redirection::{REFUSED_SERVER_REDIRECTION, is_refused_server_redirection};
+
 /// USB device redirection backend (MS-RDPEUSB), re-exported for device selection.
 #[cfg(feature = "usb")]
 pub use ironrdp_rdpeusb_native as usb;

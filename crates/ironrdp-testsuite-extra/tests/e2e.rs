@@ -4684,6 +4684,158 @@ async fn rdp_client_follows_a_server_redirection_to_its_target() {
     .await;
 }
 
+/// A client that refuses server redirections keeps its destination and returns an error that
+/// `is_refused_server_redirection` recognizes, also wrapped in a session error; other errors it does not.
+#[test]
+fn refused_server_redirection_keeps_the_destination_and_is_recognized() {
+    use ironrdp::pdu::rdp::server_redirection::ServerRedirectionPdu;
+    use ironrdp_client::config::{ConfigBuilder, Destination};
+    use ironrdp_client::{__test_apply_server_redirection, is_refused_server_redirection};
+
+    let config = |refuse: bool| {
+        ConfigBuilder::new()
+            .with_destination(Destination::from_parts("192.0.2.10", 3389))
+            .with_username(HYBRID_USER)
+            .with_password(HYBRID_PASSWORD)
+            .with_client_build(1)
+            .with_client_dir("C:\\")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+            .with_refuse_server_redirection(refuse)
+            .build()
+            .expect("client configuration")
+    };
+    let redirection = ServerRedirectionPdu {
+        session_id: 7,
+        target_net_address: Some("198.51.100.20".to_owned()),
+        ..ServerRedirectionPdu::default()
+    };
+
+    let mut refusing = config(true);
+    let before = format!("{:?}", refusing.destination());
+    let error = __test_apply_server_redirection(&mut refusing, &redirection).expect_err("the redirection is refused");
+    assert_eq!(format!("{:?}", refusing.destination()), before);
+    assert!(is_refused_server_redirection(&error));
+    let wrapped = ironrdp::session::custom_err!("server redirection", error);
+    assert!(is_refused_server_redirection(&wrapped));
+
+    let mut following = config(false);
+    __test_apply_server_redirection(&mut following, &redirection).expect("the redirection is followed");
+    assert_ne!(format!("{:?}", following.destination()), before);
+    let other = connector::reason_err!("Redirect", "some other failure");
+    assert!(!is_refused_server_redirection(&other));
+    assert!(!is_refused_server_redirection(&ironrdp::session::custom_err!(
+        "server redirection",
+        other
+    )));
+}
+
+/// An `RdpClient` built with `with_refuse_server_redirection` ends with an error on a Server Redirection PDU: it
+/// reports no redirection and opens no connection to the target, here the same server.
+#[tokio::test]
+async fn rdp_client_refuses_a_server_redirection_when_configured_to() {
+    use ironrdp::pdu::rdp::server_redirection::ServerRedirectionPdu;
+    use ironrdp_client::config::{ConfigBuilder, Destination};
+    use ironrdp_client::rdp::{RdpClient, RdpOutputEvent};
+
+    let identity = test_tls_identity();
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (connections_tx, mut connections_rx) = mpsc::unbounded_channel();
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(acceptor, identity.pub_key)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .with_connection_handler(Some(Box::new(RedirectionRecorder(connections_tx))))
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: HYBRID_USER.into(),
+        password: HYBRID_PASSWORD.into(),
+        domain: None,
+    }));
+    let redirection_handle = server.server_redirection_handle();
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.run().await;
+        });
+        let server_addr = local_addr_of(&ev).await;
+
+        let config = ConfigBuilder::new()
+            .with_destination(Destination::from_parts("127.0.0.1", server_addr.port()))
+            .with_username(HYBRID_USER)
+            .with_password(HYBRID_PASSWORD)
+            .with_client_build(1)
+            .with_client_dir("C:\\")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+            .with_clipboard(ironrdp_client::config::ClipboardType::Disable)
+            .with_refuse_server_redirection(true)
+            .build()
+            .expect("client configuration");
+        assert!(config.refuse_server_redirection());
+        let (output_tx, mut output_rx) = ironrdp_client::output_channel::output_channel(64);
+        let client_task = tokio::task::spawn_local(RdpClient::new(config, output_tx).run());
+
+        let mut events = Vec::new();
+        let ended = tokio::time::timeout(Duration::from_secs(20), async {
+            let mut redirected = false;
+            loop {
+                let event = output_rx.recv().await.expect("the client is running");
+                if !matches!(event, RdpOutputEvent::Image { .. } | RdpOutputEvent::DesktopUpdate(_)) {
+                    events.push(format!("{event:?}"));
+                }
+                match event {
+                    RdpOutputEvent::Connected if !redirected => {
+                        connections_rx.recv().await.expect("the first connection");
+                        redirection_handle
+                            .redirect(ServerRedirectionPdu {
+                                session_id: 7,
+                                target_net_address: Some("127.0.0.1".to_owned()),
+                                ..ServerRedirectionPdu::default()
+                            })
+                            .expect("the server is running");
+                        redirected = true;
+                    }
+                    RdpOutputEvent::Terminated(Err(error)) => {
+                        return ironrdp_client::is_refused_server_redirection(&error);
+                    }
+                    RdpOutputEvent::Terminated(Ok(_)) => return false,
+                    RdpOutputEvent::ConnectionFailure(error) => {
+                        return ironrdp_client::is_refused_server_redirection(&error);
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the client ends");
+        assert!(ended, "the client did not end with a refused redirection: {events:?}");
+        assert!(
+            !events.iter().any(|event| event.starts_with("ServerRedirected")),
+            "the client followed the redirection: {events:?}"
+        );
+        assert_eq!(
+            events.iter().filter(|event| *event == "Connected").count(),
+            1,
+            "the client connected again: {events:?}"
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(5), client_task).await;
+        assert!(
+            connections_rx.try_recv().is_err(),
+            "the client opened a connection to the target"
+        );
+        server_task.abort();
+    }))
+    .await;
+}
+
 /// Redirects a strictly validating `RdpClient` to `localhost`, whose self-signed test certificate fails validation,
 /// and reports whether the client connected to the target.
 ///

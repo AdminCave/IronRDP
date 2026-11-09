@@ -132,6 +132,8 @@ pub struct Config {
     pub(crate) load_balance_info: Option<String>,
     /// Whether a server redirection connects to the target by name rather than by address.
     pub(crate) use_redirection_server_name: bool,
+    /// Whether a Server Redirection PDU ends the client instead of moving it to the target.
+    pub(crate) refuse_server_redirection: bool,
     /// What the last Server Redirection PDU changed for the next connection attempts.
     pub(crate) redirection: Option<crate::redirection::RedirectionHop>,
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
@@ -293,6 +295,11 @@ impl Config {
         self.use_redirection_server_name
     }
 
+    /// Whether a Server Redirection PDU ends the client instead of moving it to the target.
+    pub fn refuse_server_redirection(&self) -> bool {
+        self.refuse_server_redirection
+    }
+
     /// RDPSND quality policy sent during audio format negotiation.
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
     pub fn audio_quality_mode(&self) -> AudioQualityMode {
@@ -364,6 +371,7 @@ impl fmt::Debug for Config {
         s.field("administrative_session", &self.administrative_session);
         s.field("load_balance_info", &self.load_balance_info);
         s.field("use_redirection_server_name", &self.use_redirection_server_name);
+        s.field("refuse_server_redirection", &self.refuse_server_redirection);
         s.field("redirection", &self.redirection);
         #[cfg(any(feature = "sound", feature = "rdpdr"))]
         s.field("audio_quality_mode", &self.audio_quality_mode);
@@ -1022,6 +1030,7 @@ pub struct ConfigBuilder {
     compression_enabled: Option<bool>,
     load_balance_info: Option<String>,
     use_redirection_server_name: bool,
+    refuse_server_redirection: bool,
     administrative_session: bool,
     alternate_shell: Option<String>,
     work_dir: Option<String>,
@@ -1367,6 +1376,16 @@ impl ConfigBuilder {
     pub fn with_use_redirection_server_name(mut self, enabled: bool) -> Self {
         self.use_redirection_server_name = enabled;
         self.properties.insert("use redirection server name", enabled);
+        self
+    }
+
+    /// End the client with an error when a server redirects it, before the configuration changes and before any
+    /// connection to the target.
+    ///
+    /// For clients that connect to one host only. Off by default.
+    #[must_use]
+    pub fn with_refuse_server_redirection(mut self, refuse: bool) -> Self {
+        self.refuse_server_redirection = refuse;
         self
     }
 
@@ -2863,6 +2882,7 @@ impl ConfigBuilder {
             administrative_session: self.administrative_session,
             load_balance_info: self.load_balance_info,
             use_redirection_server_name: self.use_redirection_server_name,
+            refuse_server_redirection: self.refuse_server_redirection,
             redirection: None,
             #[cfg(any(feature = "sound", feature = "rdpdr"))]
             audio_quality_mode: self.audio_quality_mode.unwrap_or_default(),
