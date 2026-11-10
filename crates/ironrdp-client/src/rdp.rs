@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicU8, Ordering as LocationOrdering};
 #[cfg(feature = "gateway")]
 use core::task::{Context, Poll};
 use core::time::Duration;
+use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
 #[cfg(feature = "location")]
@@ -4638,6 +4639,9 @@ async fn active_session(
     let mut graceful_shutdown_sent = false;
     let mut post_logon_redraw_requested = false;
     let mut pending_udp_payload: Option<Vec<u8>> = None;
+    // Static virtual channel frames the server sent while a Deactivation-Reactivation Sequence ran; processed
+    // before the next read, in arrival order.
+    let mut deferred_channel_frames: VecDeque<Vec<u8>> = VecDeque::new();
     let mut initial_outputs = if *graceful_close_receiver.borrow_and_update() {
         graceful_shutdown_sent = true;
         Some(active_stage.graceful_shutdown()?)
@@ -4681,7 +4685,26 @@ async fn active_session(
             #[cfg(not(feature = "rdpdr"))]
             core::future::pending::<()>().await;
         };
-        let buffered_udp_iteration = if initial_outputs.is_none() && active_stage.reliable_udp_dvc_tunnel_in_use() {
+        let deferred_channel_iteration = match deferred_channel_frames.pop_front() {
+            Some(frame) if initial_outputs.is_none() => {
+                #[cfg_attr(not(feature = "rdpdr"), expect(unused_mut))]
+                let mut outputs = active_stage.process(&mut image, ironrdp_pdu::Action::X224, &frame, None)?;
+                #[cfg(feature = "rdpdr")]
+                if let Some(output) = poll_deferred_rdpdr_output(&mut active_stage)? {
+                    outputs.push(output);
+                }
+                Some(ActiveSessionIteration::outputs(outputs))
+            }
+            Some(frame) => {
+                deferred_channel_frames.push_front(frame);
+                None
+            }
+            None => None,
+        };
+        let buffered_udp_iteration = if initial_outputs.is_none()
+            && deferred_channel_iteration.is_none()
+            && active_stage.reliable_udp_dvc_tunnel_in_use()
+        {
             match pending_udp_payload.take() {
                 Some(payload) => Some(ActiveSessionIteration::tunnel(
                     SoftSyncTunnelType::RELIABLE_UDP,
@@ -4694,6 +4717,8 @@ async fn active_session(
         };
         let mut iteration = if let Some(outputs) = initial_outputs.take() {
             ActiveSessionIteration::outputs(outputs)
+        } else if let Some(iteration) = deferred_channel_iteration {
+            iteration
         } else if let Some(iteration) = buffered_udp_iteration {
             iteration
         } else {
@@ -5766,6 +5791,7 @@ async fn active_session(
                         } = connection_activation.connection_activation_state()
                         {
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
+                            deferred_channel_frames.extend(connection_activation.take_deferred_channel_frames());
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                             desktop_update_extent = None;
                             resize_queue.completed();

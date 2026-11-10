@@ -876,3 +876,61 @@ fn active_processor_processes_the_pdu_after_an_informational_server_redirection(
 
     assert!(matches!(outputs.as_slice(), [ProcessorOutput::DeactivateAll]));
 }
+
+const DRDYNVC_CHANNEL_ID: u16 = 1005;
+
+/// A static virtual channel PDU (Channel PDU Header, [MS-RDPBCGR] 2.2.6.1.1) on a channel other than the I/O
+/// channel, as a server-to-client SendDataIndication frame.
+fn encode_server_channel_pdu(length: usize) -> Vec<u8> {
+    let mut user_data = Vec::with_capacity(8 + length);
+    user_data.extend_from_slice(&u32::try_from(length).unwrap().to_le_bytes());
+    user_data.extend_from_slice(&0x0000_0003u32.to_le_bytes()); // CHANNEL_FLAG_FIRST | CHANNEL_FLAG_LAST
+    user_data.resize(8 + length, 0xAB);
+
+    let indication = McsMessage::SendDataIndication(SendDataIndication {
+        initiator_id: USER_CHANNEL_ID,
+        channel_id: DRDYNVC_CHANNEL_ID,
+        user_data: Cow::Owned(user_data),
+    });
+
+    encode_vec(&X224(indication)).unwrap()
+}
+
+/// Static virtual channel traffic goes on while the server reactivates the I/O channel ([MS-RDPBCGR] 1.3.1.3). Such a
+/// PDU is neither a Share Control PDU nor a Server Redirection PDU, whatever its length: a length of 0x0400 sets the
+/// bit a Basic Security Header uses for `SEC_REDIRECTION_PKT`. The activation keeps the frame for the session and
+/// goes on with the Demand Active.
+// oracle: spec MS-RDPBCGR §1.3.1.3, §2.2.6.1.1
+#[rstest]
+#[case::small(100)]
+#[case::length_with_redirection_bit(0x0400)]
+fn channel_pdu_during_activation_is_deferred(#[case] length: usize) {
+    let mut sequence = ConnectionActivationSequence::new(test_config(), IO_CHANNEL_ID, USER_CHANNEL_ID);
+    let channel_frame = encode_server_channel_pdu(length);
+
+    let written = sequence.step(&channel_frame, None, &mut WriteBuf::new()).unwrap();
+    assert_eq!(written, Written::Nothing);
+    assert!(matches!(
+        sequence.connection_activation_state(),
+        ConnectionActivationState::CapabilitiesExchange
+    ));
+
+    let demand_active = encode_server_share_control(ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()));
+    sequence.step(&demand_active, None, &mut WriteBuf::new()).unwrap();
+    assert!(matches!(
+        sequence.connection_activation_state(),
+        ConnectionActivationState::ConnectionFinalization { .. }
+    ));
+
+    sequence.step(&channel_frame, None, &mut WriteBuf::new()).unwrap();
+    assert!(matches!(
+        sequence.connection_activation_state(),
+        ConnectionActivationState::ConnectionFinalization { .. }
+    ));
+
+    assert_eq!(
+        sequence.take_deferred_channel_frames(),
+        vec![channel_frame.clone(), channel_frame]
+    );
+    assert!(sequence.take_deferred_channel_frames().is_empty());
+}

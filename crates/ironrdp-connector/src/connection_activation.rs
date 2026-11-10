@@ -43,6 +43,10 @@ pub struct ConnectionActivationSequence {
     // here (rather than duplicated into every state variant).
     io_channel_id: u16,
     user_channel_id: u16,
+    // Static virtual channel traffic does not pause while the server (re)activates the I/O
+    // channel, but this sequence can only decode I/O channel PDUs. Frames received on any other
+    // channel are kept, in order, for the session to process once the activation is finalized.
+    deferred_channel_frames: Vec<Vec<u8>>,
 }
 
 impl ConnectionActivationSequence {
@@ -56,6 +60,7 @@ impl ConnectionActivationSequence {
             config,
             io_channel_id,
             user_channel_id,
+            deferred_channel_frames: Vec::new(),
         }
     }
 
@@ -65,6 +70,12 @@ impl ConnectionActivationSequence {
 
     pub fn user_channel_id(&self) -> u16 {
         self.user_channel_id
+    }
+
+    /// Takes the X.224 frames received on channels other than the I/O channel during this activation, in the
+    /// order they arrived. The session processes them like any frame read after the activation.
+    pub fn take_deferred_channel_frames(&mut self) -> Vec<Vec<u8>> {
+        mem::take(&mut self.deferred_channel_frames)
     }
 
     /// Returns the current state as a distinct type, rather than `&dyn State` provided by [`Self::state`].
@@ -152,13 +163,26 @@ impl Sequence for ConnectionActivationSequence {
         received_at: Option<MonotonicInstant>,
         output: &mut ironrdp_core::WriteBuf,
     ) -> ConnectorResult<Written> {
-        // The server may redirect the client instead of, or in the middle of, activating it
-        // ([MS-RDPBCGR] 3.2.5.13.1).
-        if matches!(
+        let activating = matches!(
             self.state,
             ConnectionActivationState::CapabilitiesExchange | ConnectionActivationState::ConnectionFinalization { .. }
-        ) && let Some(redirection) = server_redirection(input)?
+        );
+
+        if activating
+            && let Ok(ctx) = ironrdp_pdu::mcs::decode_send_data_indication(input)
+            && ctx.channel_id != self.io_channel_id
         {
+            debug!(
+                channel_id = ctx.channel_id,
+                "Deferring a PDU received on a static virtual channel during activation"
+            );
+            self.deferred_channel_frames.push(input.to_vec());
+            return Ok(Written::Nothing);
+        }
+
+        // The server may redirect the client instead of, or in the middle of, activating it
+        // ([MS-RDPBCGR] 3.2.5.13.1).
+        if activating && let Some(redirection) = server_redirection(input)? {
             if redirection.is_informational() {
                 debug!(?redirection, "Ignoring informational Server Redirection PDU");
             } else {
